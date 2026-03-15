@@ -617,10 +617,13 @@ void GPUInstance<KeyT, ValueT, BaseT>::store()
   VLOG(0) << "[GPU: " << shard_config.device_index << "] store() done.";
 }
 
+/**
+ * Async version of query()
+ */
 template <typename KeyT, typename ValueT, typename BaseT>
-typename GPUInstance<KeyT, ValueT, BaseT>::Results GPUInstance<KeyT, ValueT, BaseT>::query(
+QueryAsyncHandle<KeyT, ValueT> GPUInstance<KeyT, ValueT, BaseT>::queryLocalAsync(
     const Dataset<BaseT>& query, const uint32_t KQuery, const uint32_t max_iterations,
-    const float tau_query, const DistanceMeasure measure)
+    const float tau_query, const DistanceMeasure measure, cudaStream_t user_stream)
 {
   if (d_buffers.empty() || getGPUGraphBuffer(0).global_shard_id == -1U) {
     LOG(ERROR) << "no graph available for query. did you forget to build one?";
@@ -628,11 +631,16 @@ typename GPUInstance<KeyT, ValueT, BaseT>::Results GPUInstance<KeyT, ValueT, Bas
   }
 
   const uint32_t num_previous_shards = shard_config.device_index * shard_config.num_shards;
+  
+  cudaStream_t exec_stream = user_stream;
+  if (exec_stream == 0) {
+    exec_stream = getStreamForPart(
+        num_previous_shards + (process_shards_back_to_front ? shard_config.num_shards - 1 : 0);
+    )
+  }
 
   Dataset<BaseT> d_query = query.referenceOnGPU(
-      gpu_ctx.gpu_id,
-      getStreamForPart(num_previous_shards +
-                       (process_shards_back_to_front ? shard_config.num_shards - 1 : 0)));
+      gpu_ctx.gpu_id, exec_stream);
 
   Results d_results = {
       Dataset<KeyT>::emptyOnGPU(d_query.N, KQuery * shard_config.num_shards, gpu_ctx.gpu_id),
@@ -658,6 +666,9 @@ typename GPUInstance<KeyT, ValueT, BaseT>::Results GPUInstance<KeyT, ValueT, Bas
     loadBasePart(global_shard_id);
     swapInPart(global_shard_id);
   }
+
+  std::vector<cudaEvent_t> shard_done_events;
+  shard_done_events.reserve(shard_config.num_shards);
 
   // query all shards
   for (uint32_t i = 0; i < shard_config.num_shards; i++) {
@@ -698,6 +709,11 @@ typename GPUInstance<KeyT, ValueT, BaseT>::Results GPUInstance<KeyT, ValueT, Bas
       swapInPart(global_shard_id + prefetch_amount);
     }
 
+    cudaEvent_t shard_done;
+    CHECK_CUDA(cudaEventCreateWithFlags(&shard_done, cudaEventDisableTiming));
+    CHECK_CUDA(cudaEventRecord(shard_done, stream));
+    shard_done_events.push_back(shard_done);
+
     CHECK_CUDA(cudaEventSynchronize(stop));
 
     CHECK_CUDA(cudaEventElapsedTime(&milliseconds, start, stop));
@@ -706,16 +722,17 @@ typename GPUInstance<KeyT, ValueT, BaseT>::Results GPUInstance<KeyT, ValueT, Bas
             << milliseconds * 1000.0f / static_cast<float>(N_query) << " us/point] \n";
   }
 
+  for (auto event : shard_done_events) {
+    CHECK_CUDA(cudaStreamWaitEvent(exec_stream, event, 0));
+  }
+
+  auto workspace = std::make_shared<QueryAsyncWorkspace<KeyT, ValueT>>();
+
   // sort results from multiple parts
   if (shard_config.num_shards > 1) {
-    cudaStream_t lastShardStream = getStreamForPart(
-        num_previous_shards + (process_shards_back_to_front ? 0 : shard_config.num_shards - 1));
-
-    CHECK_CUDA(cudaEventRecord(start, lastShardStream));
-
-    sortQueryResults(d_results, lastShardStream);
-
-    CHECK_CUDA(cudaEventRecord(stop, lastShardStream));
+    CHECK_CUDA(cudaEventRecord(start, exec_stream));
+    sortQueryResultsAsync(d_results, *workspace, exec_stream);
+    CHECK_CUDA(cudaEventRecord(stop, exec_stream));
     CHECK_CUDA(cudaEventSynchronize(stop));
 
     CHECK_CUDA(cudaEventElapsedTime(&milliseconds, start, stop));
@@ -724,7 +741,15 @@ typename GPUInstance<KeyT, ValueT, BaseT>::Results GPUInstance<KeyT, ValueT, Bas
             << " points query -> " << milliseconds * 1000.0f / static_cast<float>(N_query)
             << " us/point] \n";
 
-    VLOG(0) << "[GPU: " << shard_config.device_index << "] query() done.";
+    VLOG(0) << "[GPU: " << shard_config.device_index << "] queryLocalAsync() done.";
+  }
+
+  cudaEvent_t done_event;
+  CHECK_CUDA(cudaEventCreateWithFlags(&done_event, cudaEventDisableTiming));
+  CHECK_CUDA(cudaEventRecord(done_event, exec_stream));
+
+  for(auto event : shard_done_events) {
+    CHECK_CUDA(cudaEventDestroy(event));
   }
 
   CHECK_CUDA(cudaEventDestroy(start));
@@ -733,7 +758,77 @@ typename GPUInstance<KeyT, ValueT, BaseT>::Results GPUInstance<KeyT, ValueT, Bas
   // process the shards in reverse order during the next query for improved cache utilization
   process_shards_back_to_front = !process_shards_back_to_front;
 
-  return d_results;
+  QueryAsyncHandle<KeyT, ValueT> handle;
+  handle.results = std::move(d_results);
+  handle.done_event = done_event;
+  handle.workspace = workspace;
+
+  return handle;
+}
+
+template <typename KeyT, typename ValueT, typename BaseT>
+typename GPUInstance<KeyT, ValueT, BaseT>::Results GPUInstance<KeyT, ValueT, BaseT>::query(
+    const Dataset<BaseT>& query, const uint32_t KQuery, const uint32_t max_iterations,
+    const float tau_query, const DistanceMeasure measure)
+{
+  // Warpper for queryLocalAsync to provide a synchronous interface.
+  auto handle = queryLocalAsync(query, KQuery, max_iterations, tau_query, measure);
+  if (handle.done_event) {
+    CHECK_CUDA(cudaEventSynchronize(handle.done_event));
+    CHECK_CUDA(cudaEventDestroy(handle.done_event));
+    handle.done_event = nullptr;
+  }
+  return std::move(handle.results); // we use move semantics here to avoid unnecessary copying of the results
+}
+
+/**
+ * Async version of sortQueryResults, which eliminates the need to synchronize the stream after sorting before returning the results.
+ */
+template <typename KeyT, typename ValueT, typename BaseT>
+void GPUInstance<KeyT, ValueT, BaseT>::sortQueryResultsAsync(Results& d_results, QueryAsyncWorkspace<KeyT, ValueT>& ws, cudaStream_t stream)
+{
+  if (shard_config.num_shards <= 1)
+    return;
+
+  CHECK_NOTNULL(d_results.ids.data());
+
+  ws.sorted_results = {
+      Dataset<KeyT>::emptyOnGPU(d_results.ids.N, d_results.ids.D, gpu_ctx.gpu_id),
+      Dataset<ValueT>::emptyOnGPU(d_results.dists.N, d_results.dists.D, gpu_ctx.gpu_id)};
+
+  ws.offsets =
+      Dataset<uint32_t>::emptyOnGPU(d_results.ids.N + 1, 1, gpu_ctx.gpu_id);
+
+  // The results are stored sequentially for all parts per query.
+  // CUB needs to know where these sequences begin and end.
+  // The previous end always serves as the next beginning.
+  Dataset<uint32_t> h_offsets{Dataset<uint32_t>::empty(d_results.ids.N + 1, 1, true)};
+  for (uint32_t i = 0; i < (d_results.ids.N + 1); i++) {
+    h_offsets[i] = i * d_results.ids.D;
+  }
+  h_offsets.copyTo(ws.offsets, stream);
+
+  size_t temp_storage_bytes = 0;
+
+  cub::DeviceSegmentedRadixSort::SortPairs(
+      nullptr, temp_storage_bytes, d_results.dists.data(), ws.sorted_results.dists.data(),
+      d_results.ids.data(), ws.sorted_results.ids.data(), static_cast<int>(d_results.ids.numel()),
+      static_cast<int>(d_results.ids.N), ws.offsets.data(), ws.offsets.data() + 1, 0,
+      sizeof(ValueT) * 8, stream);
+
+  ws.temp_storage =
+      Dataset<std::byte>::emptyOnGPU(temp_storage_bytes, 1, gpu_ctx.gpu_id);
+
+  cub::DeviceSegmentedRadixSort::SortPairs(
+      ws.temp_storage.data(), temp_storage_bytes, d_results.dists.data(),
+      ws.sorted_results.dists.data(), d_results.ids.data(), ws.sorted_results.ids.data(),
+      static_cast<int>(d_results.ids.numel()), static_cast<int>(d_results.ids.N), ws.offsets.data(),
+      ws.offsets.data() + 1, 0, sizeof(ValueT) * 8, stream);
+
+  // We expect the synchronization to be eliminated by the caller.
+  // CHECK_CUDA(cudaStreamSynchronize(stream));
+
+  std::swap(d_results, ws.sorted_results);
 }
 
 template <typename KeyT, typename ValueT, typename BaseT>

@@ -65,6 +65,30 @@ struct GPUContext {
 };
 
 /**
+ * Workspace used by async query path.
+ * We keep temporary buffer alive on GPU until the async query is completed.
+ */
+template <typename KeyT, typename ValueT>
+struct QueryAsyncWorkspace {
+  Results<KeyT, ValueT> sorted_results;
+  Dataset<uint32_t> offsets{};
+  Dataset<std::byte> temp_storage{};
+};
+
+/**
+ * Handle for async query path.
+ * - results stay on device
+ * - done_event signals "local top-k ready"
+ * - workspace keeps async temp buffers alive
+ */
+template <typename KeyT, typename ValueT>
+struct QueryAsyncHandle {
+  Results<KeyT, ValueT> results{};
+  cudaEvent_t done_event{};
+  std::shared_ptr<QueryAsyncWorkspace<KeyT, ValueT>> workspace{};
+};
+
+/**
  * GGNN core operations (shared between single-GPU and multi-GPU version)
  *
  * @param KeyT datatype of dataset indices (needs to be able to represent
@@ -98,6 +122,21 @@ class GPUInstance {
   [[nodiscard]] Results query(const Dataset<BaseT>& query,
                               const uint32_t KQuery, const uint32_t max_iterations,
                               const float tau_query, const DistanceMeasure measure);
+  
+  /**
+   * Async Local Query for framework / pipeline usage.
+   * 
+   * Semantics:
+   * - launches local GGNN query work asynchronously
+   * - returns immediately after enqueuing the work on the GPU, without waiting for it to complete
+   * - returns done_event: local result buffer is ready on GPU and can be consumed by NCCL if available
+   */
+  [[nodiscard]] QueryAsyncHandle<KeyT, ValueT> queryLocalAsync(const Dataset<BaseT>& query, 
+                                                              const uint32_t KQuery,
+                                                              const uint32_t max_iterations,
+                                                              const float tau_query,
+                                                              const DistanceMeasure measure,
+                                                              cudaStream_t stream = 0);
 
   struct GPUGraphBuffer {
     Graph graph;
@@ -210,7 +249,15 @@ class GPUInstance {
    * Results are expected to be concatenated per query vector.
    */
   void sortQueryResults(Results& d_results, cudaStream_t stream);
+
+  /**
+   * Async version of sortQueryResults.
+   * Does not synchronize the stream.
+   * Temporary buffers are stored in workspace to keep data on GPU alive.
+   */
+  void sortQueryResultsAsync(Results& d_results, QueryAsyncWorkspace<KeyT, ValueT>& ws, cudaStream_t stream);
 };
+
 
 };  // namespace ggnn
 
