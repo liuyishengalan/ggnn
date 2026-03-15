@@ -646,17 +646,11 @@ QueryAsyncHandle<KeyT, ValueT> GPUInstance<KeyT, ValueT, BaseT>::queryLocalAsync
       Dataset<ValueT>::emptyOnGPU(d_query.N, KQuery * shard_config.num_shards, gpu_ctx.gpu_id)};
 
   QueryKernels<KeyT, ValueT, BaseT> query_kernels{measure};
-  const uint32_t N_query = d_query.N;
   const size_t num_gpu_buffers = d_buffers.size();
   const size_t num_cpu_buffers = h_buffers.size();
   const size_t prefetch_amount = std::min(num_cpu_buffers, num_gpu_buffers);
 
   gpu_ctx.activate();
-
-  cudaEvent_t start, stop;
-  CHECK_CUDA(cudaEventCreate(&start));
-  CHECK_CUDA(cudaEventCreate(&stop));
-  float milliseconds = 0;
 
   // prefetch as many shards onto the GPU as possible
   for (uint32_t i = 0; i < num_gpu_buffers; i++) {
@@ -688,10 +682,8 @@ QueryAsyncHandle<KeyT, ValueT> GPUInstance<KeyT, ValueT, BaseT>::queryLocalAsync
 
     // CHECK_CUDA(cudaStreamSynchronize(stream));
 
-    CHECK_CUDA(cudaEventRecord(start, stream));
     query_kernels.query(*this, global_shard_id, d_query, KQuery, max_iterations, tau_query,
                         d_results);
-    CHECK_CUDA(cudaEventRecord(stop, stream));
 
     // start the upload for the next shard after starting the current query
     // then, it should be able to overlap
@@ -712,13 +704,6 @@ QueryAsyncHandle<KeyT, ValueT> GPUInstance<KeyT, ValueT, BaseT>::queryLocalAsync
     CHECK_CUDA(cudaEventCreateWithFlags(&shard_done, cudaEventDisableTiming));
     CHECK_CUDA(cudaEventRecord(shard_done, stream));
     shard_done_events.push_back(shard_done);
-
-    CHECK_CUDA(cudaEventSynchronize(stop));
-
-    CHECK_CUDA(cudaEventElapsedTime(&milliseconds, start, stop));
-    VLOG(0) << "[GPU: " << shard_config.device_index << "] query part: " << global_shard_id
-            << " => ms: " << milliseconds << " [" << N_query << " points query -> "
-            << milliseconds * 1000.0f / static_cast<float>(N_query) << " us/point] \n";
   }
 
   for (auto event : shard_done_events) {
@@ -729,19 +714,11 @@ QueryAsyncHandle<KeyT, ValueT> GPUInstance<KeyT, ValueT, BaseT>::queryLocalAsync
 
   // sort results from multiple parts
   if (shard_config.num_shards > 1) {
-    CHECK_CUDA(cudaEventRecord(start, exec_stream));
     sortQueryResultsAsync(d_results, *workspace, exec_stream);
-    CHECK_CUDA(cudaEventRecord(stop, exec_stream));
-    CHECK_CUDA(cudaEventSynchronize(stop));
-
-    CHECK_CUDA(cudaEventElapsedTime(&milliseconds, start, stop));
-    VLOG(0) << "[GPU: " << shard_config.device_index
-            << "] query sort: " << " => ms: " << milliseconds << " [" << N_query
-            << " points query -> " << milliseconds * 1000.0f / static_cast<float>(N_query)
-            << " us/point] \n";
-
-    VLOG(0) << "[GPU: " << shard_config.device_index << "] queryLocalAsync() done.";
   }
+
+    VLOG(0) << "[GPU: " << shard_config.device_index
+      << "] queryLocalAsync() enqueued without stream synchronization.";
 
   cudaEvent_t done_event;
   CHECK_CUDA(cudaEventCreateWithFlags(&done_event, cudaEventDisableTiming));
@@ -750,9 +727,6 @@ QueryAsyncHandle<KeyT, ValueT> GPUInstance<KeyT, ValueT, BaseT>::queryLocalAsync
   for(auto event : shard_done_events) {
     CHECK_CUDA(cudaEventDestroy(event));
   }
-
-  CHECK_CUDA(cudaEventDestroy(start));
-  CHECK_CUDA(cudaEventDestroy(stop));
 
   // process the shards in reverse order during the next query for improved cache utilization
   process_shards_back_to_front = !process_shards_back_to_front;
