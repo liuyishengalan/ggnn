@@ -635,8 +635,7 @@ QueryAsyncHandle<KeyT, ValueT> GPUInstance<KeyT, ValueT, BaseT>::queryLocalAsync
   cudaStream_t exec_stream = user_stream;
   if (exec_stream == 0) {
     exec_stream = getStreamForPart(
-        num_previous_shards + (process_shards_back_to_front ? shard_config.num_shards - 1 : 0);
-    )
+        num_previous_shards + (process_shards_back_to_front ? shard_config.num_shards - 1 : 0));
   }
 
   Dataset<BaseT> d_query = query.referenceOnGPU(
