@@ -55,6 +55,7 @@ size_t dataSize(DataType type)
 {
   switch (type) {
     case DataType::BYTE:
+    case DataType::INT8:
     case DataType::UINT8:
       return 1;
     case DataType::INT32:

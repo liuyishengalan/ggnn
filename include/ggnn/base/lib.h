@@ -24,6 +24,7 @@ limitations under the License.
   F(__VA_OPT__(__VA_ARGS__, ) float);
 
 #define GGNN_BASES(F, ...)              \
+  F(__VA_OPT__(__VA_ARGS__, ) int8_t);  \
   F(__VA_OPT__(__VA_ARGS__, ) uint8_t); \
   F(__VA_OPT__(__VA_ARGS__, ) float);
 

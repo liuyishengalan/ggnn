@@ -334,6 +334,7 @@ Dataset<T> Dataset<T>::referenceOnGPU(int gpu_id, cudaStream_t stream) const
 }
 
 template struct Dataset<std::byte>;
+template struct Dataset<int8_t>;
 template struct Dataset<uint8_t>;
 template struct Dataset<int32_t>;
 template struct Dataset<uint32_t>;

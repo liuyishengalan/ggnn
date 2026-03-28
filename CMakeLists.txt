@@ -9,6 +9,7 @@ set(CMAKE_CUDA_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED TRUE)
 set(CMAKE_CUDA_STANDARD_REQUIRED TRUE)
 
+
 # CUDA toolkit version 12 required for C++20 support
 find_package(CUDAToolkit 12 REQUIRED)
 
@@ -150,6 +151,7 @@ target_sources(GGNNBase PRIVATE
     )
 
 add_library(GGNNConstruction SHARED)
+set_target_properties(GGNNConstruction PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 target_sources(GGNNConstruction PRIVATE
     "src/ggnn/construction/graph_construction.cu"
 
@@ -183,6 +185,7 @@ target_sources(GGNNConstruction PUBLIC
     "include/ggnn/construction/graph_construction.cuh"
     )
 add_library(GGNNQuery SHARED)
+set_target_properties(GGNNQuery PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 target_sources(GGNNQuery PRIVATE
     "src/ggnn/query/query_kernels.cu"
 
@@ -257,6 +260,8 @@ if (NOT PY_BUILD_CMAKE_MODULE_NAME)
       "${CMAKE_CURRENT_SOURCE_DIR}/examples/cpp-and-cuda/ggnn_main_gpu_data.cu"
       "${CMAKE_CURRENT_SOURCE_DIR}/examples/cpp-and-cuda/ggnn_main_multi_gpu.cpp"
       "${CMAKE_CURRENT_SOURCE_DIR}/examples/cpp-and-cuda/ggnn_benchmark.cpp"
+      "${CMAKE_CURRENT_SOURCE_DIR}/examples/cpp-and-cuda/test_query_async_sift.cu"
+
     )
     foreach(filename ${files})
         get_filename_component(EXECUTABLE_NAME "${filename}" NAME_WLE)

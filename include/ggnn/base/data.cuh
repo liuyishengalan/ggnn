@@ -27,6 +27,7 @@ namespace ggnn {
 enum class DataType : uint16_t {
   UNKNOWN,
   BYTE,
+  INT8,
   UINT8,
   INT32,
   UINT32,
@@ -54,6 +55,10 @@ struct DataTypeAssignment;
 template <>
 struct DataTypeAssignment<std::byte> {
   static constexpr DataType value{DataType::BYTE};
+};
+template <>
+struct DataTypeAssignment<int8_t> {
+  static constexpr DataType value{DataType::INT8};
 };
 template <>
 struct DataTypeAssignment<uint8_t> {

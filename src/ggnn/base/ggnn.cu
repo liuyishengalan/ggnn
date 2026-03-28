@@ -466,6 +466,8 @@ template <typename KeyT, typename ValueT>
 void GGNN<KeyT, ValueT>::setBase(GenericDataset&& base)
 {
   // TODO: check pimpl, set new one based on data type
+  GGNNImpl<KeyT, ValueT, int8_t>* impl_int8_t =
+    dynamic_cast<GGNNImpl<KeyT, ValueT, int8_t>*>(pimpl.get());
   GGNNImpl<KeyT, ValueT, uint8_t>* impl_uint8_t =
       dynamic_cast<GGNNImpl<KeyT, ValueT, uint8_t>*>(pimpl.get());
   GGNNImpl<KeyT, ValueT, float>* impl_float =
@@ -491,6 +493,17 @@ void GGNN<KeyT, ValueT>::setBase(GenericDataset&& base)
         pimpl.reset(impl_uint8_t);
       }
       impl_uint8_t->setBaseImpl(std::move(base));
+      return;
+    case DataType::INT8:
+      CHECK_EQ(impl_float, nullptr)
+          << "base has already been set with a different data type (float)";
+      CHECK_EQ(impl_uint8_t, nullptr)
+          << "base has already been set with a different data type (uint8_t)";
+      if (!impl_int8_t) {
+        impl_int8_t = new GGNNImpl<KeyT, ValueT, int8_t>{*static_cast<GGNNConfig*>(impl_base)};
+        pimpl.reset(impl_int8_t);
+      }
+      impl_int8_t->setBaseImpl(std::move(base));
       return;
     default:
       break;
@@ -540,6 +553,12 @@ Results<KeyT, ValueT> GGNN<KeyT, ValueT>::query(const GenericDataset& query, con
     case DataType::UINT8: {
       GGNNImpl<KeyT, ValueT, uint8_t>* impl =
           dynamic_cast<GGNNImpl<KeyT, ValueT, uint8_t>*>(pimpl.get());
+      CHECK_NOTNULL(impl);  // query data type does not mach base data type or base not set
+      return impl->queryImpl(query.reference(), KQuery, tau_query, max_iterations, measure);
+    }
+    case DataType::INT8: {
+      GGNNImpl<KeyT, ValueT, int8_t>* impl =
+          dynamic_cast<GGNNImpl<KeyT, ValueT, int8_t>*>(pimpl.get());
       CHECK_NOTNULL(impl);  // query data type does not mach base data type or base not set
       return impl->queryImpl(query.reference(), KQuery, tau_query, max_iterations, measure);
     }
