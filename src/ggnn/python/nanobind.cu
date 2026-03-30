@@ -21,6 +21,9 @@ limitations under the License.
 #include <ggnn/base/lib.h>
 #include <ggnn/base/dataset.cuh>
 #include <ggnn/base/ggnn.cuh>
+#include <ggnn/base/gpu_instance.cuh>
+
+#include <ggnn/cuda_utils/check.cuh>
 
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
@@ -57,6 +60,7 @@ constexpr auto any_size = nb::any;
 
 using KeyT = int32_t;
 using ValueT = float;
+using QueryAsyncHandle = ggnn::QueryAsyncHandle<KeyT, ValueT>;
 
 template <typename T>
 using NB2DArrayTorch = nb::ndarray<T, nb::shape<any_size, any_size>, nb::c_contig, nb::pytorch>;
@@ -181,6 +185,26 @@ without copying through CPU memory (e.g., torch tensors).
   GGNN_EVAL(GGNN_BASES, DATASET_CLASS);
   GGNN_EVAL(GGNN_KEYS, DATASET_CLASS);
 
+  nb::class_<QueryAsyncHandle>(m, "QueryAsyncHandle")
+      .def_prop_ro("indices",
+                   [](const QueryAsyncHandle& handle) {
+                     return dataset_to_ndarray_view(handle.results.ids);
+                   })
+      .def_prop_ro("distances",
+                   [](const QueryAsyncHandle& handle) {
+                     return dataset_to_ndarray_view(handle.results.dists);
+                   })
+      .def_prop_ro("done_event",
+                   [](const QueryAsyncHandle& handle) -> uint64_t {
+                     return reinterpret_cast<uint64_t>(handle.done_event);
+                   })
+      .def("synchronize",
+           [](const QueryAsyncHandle& handle) {
+             if (handle.done_event)
+               CHECK_CUDA(cudaEventSynchronize(handle.done_event));
+           },
+           "Synchronize on the completion event of the asynchronous query.");
+
   nb::class_<GGNN<KeyT, ValueT>>(m, "GGNN")
       .def(nb::init<>())
       // set base
@@ -236,6 +260,28 @@ without copying through CPU memory (e.g., torch tensors).
           },
           "query"_a, "k_query"_a, "tau_query"_a, "max_iterations"_a = 400,
           "measure"_a = DistanceMeasure::Euclidean, "Run a query and return indices and distances.")
+          .def(
+            "query_local_async",
+            [](GGNN<KeyT, ValueT>& ggnn, const Dataset<float>& query, const uint32_t KQuery,
+             const float tau_query, const uint32_t max_iterations, const DistanceMeasure measure,
+             const uint64_t stream_ptr) {
+            return ggnn.queryLocalAsync(query, KQuery, tau_query, max_iterations, measure,
+                          reinterpret_cast<cudaStream_t>(stream_ptr));
+            },
+            "query"_a, "k_query"_a, "tau_query"_a, "max_iterations"_a = 400,
+            "measure"_a = DistanceMeasure::Euclidean, "stream"_a = uint64_t{0},
+            "Enqueue an asynchronous query and return a QueryAsyncHandle with GPU-resident results.")
+          .def(
+            "query_local_async",
+            [](GGNN<KeyT, ValueT>& ggnn, const Dataset<uint8_t>& query, const uint32_t KQuery,
+             const float tau_query, const uint32_t max_iterations, const DistanceMeasure measure,
+             const uint64_t stream_ptr) {
+            return ggnn.queryLocalAsync(query, KQuery, tau_query, max_iterations, measure,
+                          reinterpret_cast<cudaStream_t>(stream_ptr));
+            },
+            "query"_a, "k_query"_a, "tau_query"_a, "max_iterations"_a = 400,
+            "measure"_a = DistanceMeasure::Euclidean, "stream"_a = uint64_t{0},
+            "Enqueue an asynchronous query and return a QueryAsyncHandle with GPU-resident results.")
       .def(
           "bf_query",
           [](GGNN<KeyT, ValueT>& ggnn, const Dataset<float>& query, const uint32_t KGT,

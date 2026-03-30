@@ -338,6 +338,25 @@ struct GGNNImpl : public GGNNImplBase<KeyT, ValueT> {
     return std::move(result_merger).merge(N_shard);
   }
 
+  QueryAsyncHandle<KeyT, ValueT> queryLocalAsyncImpl(const Dataset<BaseT>& query,
+                                                      const uint32_t KQuery,
+                                                      const float tau_query,
+                                                      const uint32_t max_iterations,
+                                                      const DistanceMeasure measure,
+                                                      cudaStream_t stream)
+  {
+    if (gpu_instances.empty())
+      throw std::runtime_error("There is no graph to query.");
+
+    if (gpu_instances.size() > 1) {
+      throw std::runtime_error(
+          "GGNN::queryLocalAsync currently supports a single GPU instance only.");
+    }
+
+    GPUInstance& gpu_instance = gpu_instances.at(0);
+    return gpu_instance.queryLocalAsync(query, KQuery, max_iterations, tau_query, measure, stream);
+  }
+
   Results bfQueryImpl(const Dataset<BaseT>& query, const uint32_t KGT,
                       const DistanceMeasure measure)
   {
@@ -561,6 +580,39 @@ Results<KeyT, ValueT> GGNN<KeyT, ValueT>::query(const GenericDataset& query, con
           dynamic_cast<GGNNImpl<KeyT, ValueT, int8_t>*>(pimpl.get());
       CHECK_NOTNULL(impl);  // query data type does not mach base data type or base not set
       return impl->queryImpl(query.reference(), KQuery, tau_query, max_iterations, measure);
+    }
+    default:
+      break;
+  }
+  throw std::runtime_error("unsupported datatype for query");
+}
+
+template <typename KeyT, typename ValueT>
+QueryAsyncHandle<KeyT, ValueT> GGNN<KeyT, ValueT>::queryLocalAsync(
+    const GenericDataset& query, const uint32_t KQuery, const float tau_query,
+    const uint32_t max_iterations, const DistanceMeasure measure, cudaStream_t stream)
+{
+  switch (query.type) {
+    case DataType::FLOAT: {
+      GGNNImpl<KeyT, ValueT, float>* impl =
+          dynamic_cast<GGNNImpl<KeyT, ValueT, float>*>(pimpl.get());
+      CHECK_NOTNULL(impl);  // query data type does not mach base data type or base not set
+      return impl->queryLocalAsyncImpl(query.reference(), KQuery, tau_query, max_iterations,
+                                       measure, stream);
+    }
+    case DataType::UINT8: {
+      GGNNImpl<KeyT, ValueT, uint8_t>* impl =
+          dynamic_cast<GGNNImpl<KeyT, ValueT, uint8_t>*>(pimpl.get());
+      CHECK_NOTNULL(impl);  // query data type does not mach base data type or base not set
+      return impl->queryLocalAsyncImpl(query.reference(), KQuery, tau_query, max_iterations,
+                                       measure, stream);
+    }
+    case DataType::INT8: {
+      GGNNImpl<KeyT, ValueT, int8_t>* impl =
+          dynamic_cast<GGNNImpl<KeyT, ValueT, int8_t>*>(pimpl.get());
+      CHECK_NOTNULL(impl);  // query data type does not mach base data type or base not set
+      return impl->queryLocalAsyncImpl(query.reference(), KQuery, tau_query, max_iterations,
+                                       measure, stream);
     }
     default:
       break;

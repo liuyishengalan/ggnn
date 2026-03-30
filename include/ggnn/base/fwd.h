@@ -33,6 +33,9 @@ struct Graph;
 template <typename KeyT, typename ValueT>
 struct Results;
 
+template <typename KeyT, typename ValueT>
+struct QueryAsyncHandle;
+
 };  // namespace ggnn
 
 #endif  // INCLUDE_GGNN_FWD_H

@@ -155,6 +155,23 @@ class GGNN {
                                       const DistanceMeasure measure = DistanceMeasure::Euclidean);
 
   /**
+   * Query the GGNN search graph asynchronously and return GPU-resident local results.
+   *
+   * The returned handle owns temporary GPU workspace that must stay alive until
+   * the done event has completed.
+   *
+   * Requires base to be set.
+   * Requires a graph to be built or loaded first.
+   *
+   * NOTE: query data type has to match base data type
+   */
+  [[nodiscard]] virtual QueryAsyncHandle<KeyT, ValueT> queryLocalAsync(
+      const GenericDataset& query, const uint32_t KQuery, const float tau_query,
+      const uint32_t max_iterations = 400,
+      const DistanceMeasure measure = DistanceMeasure::Euclidean,
+      cudaStream_t stream = 0);
+
+  /**
    * Run a brute-force query on the base dataset.
    * @param query may be given on CPU or GPU
    *
